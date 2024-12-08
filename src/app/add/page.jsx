@@ -1,7 +1,11 @@
-import React from 'react'
+import Layout from "@/components/Layout";
+import ProductForm from "@/components/ProductForm";
+import React from "react";
 
 export default function AddPage() {
   return (
-    <div>AddPage</div>
-  )
+    <Layout>
+      <ProductForm />
+    </Layout>
+  );
 }

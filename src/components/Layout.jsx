@@ -15,7 +15,7 @@ export default function Layout({ children }) {
         {/* Top Navbar */}
         <TopNavbar onMenuClick={() => setShowNav(!showNav)} />
         {/* Main Content */}
-        <main className="p-6 space-y-6 bg-gray-100">{children}</main>
+        <main className="p-6 space-y-6">{children}</main>
       </div>
     </div>
   );
