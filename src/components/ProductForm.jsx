@@ -1,7 +1,20 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import Image from "next/image";
+import {
+  getDownloadURL,
+  getStorage,
+  ref,
+  uploadBytesResumable,
+} from "firebase/storage";
+import { app } from "../firebase";
+import { ReactSortable } from "react-sortablejs";
+import { productSchema } from "../../../backend/src/modules/product/product.shcema"; // مسار المخطط
+import ErrorMessage from "./ErrorMessage";
+import LoadingSpinner from "./LoadingSpinner";
+
+const MAX_IMAGES = 6;
 
 const ProductForm = () => {
   const [formData, setFormData] = useState({
@@ -12,67 +25,301 @@ const ProductForm = () => {
     price: "",
     sizes: [],
     bestseller: false,
-    images: [],
+    imagesByColor: {},
   });
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  const [imageUploadProgress, setImageUploadProgress] = useState(null);
+  const [imageUploadError, setImageUploadError] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [files, setFiles] = useState([]);
+  const [selectedColor, setSelectedColor] = useState("");
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(false);
+  const filePickerRef = useRef();
+  const colors = ["احمر", "اسود", "ازرق", "اخضر", "ابيض", "رمادي", "الوردي"];
+  const sizeMapping = {
+    SM: "صغير",
+    MD: "متوسط",
+    LG: "كبير",
+    XL: "XL",
+    XXL: "XXL",
+  };
+  const categories = [
+    { label: "رجال", value: "Men" },
+    { label: "نساء", value: "Women" },
+    { label: "أطفال", value: "Kids" },
+  ];
 
-  const sizes = ["SM", "MD", "LG", "XL", "XXL"]; // Available sizes
+  const subCategories = [
+    { label: "ملابس علوية", value: "Topwear" },
+    { label: "ملابس سفلية", value: "Bottomwear" },
+    { label: "ملابس شتوية", value: "Winterwear" },
+  ];
+
+  const prepareSizesForSubmission = (sizes) =>
+    sizes.map((size) =>
+      Object.keys(sizeMapping).includes(size)
+        ? size
+        : Object.keys(sizeMapping).find((key) => sizeMapping[key] === size)
+    );
+
+  const handleFileChange = (e) => {
+    const selectedFiles = Array.from(e.target.files);
+    setFiles(selectedFiles);
+  };
+
+  const uploadImage = async (file) => {
+    const storage = getStorage(app);
+    const storageRef = ref(storage, `${Date.now()}_${file.name}`);
+    const uploadTask = uploadBytesResumable(storageRef, file);
+
+    return new Promise((resolve, reject) => {
+      uploadTask.on(
+        "state_changed",
+        (snapshot) => {
+          const progress =
+            (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+          setImageUploadProgress(progress.toFixed(1));
+        },
+        (error) => {
+          setImageUploadError("Image upload failed (2 mb max per image)");
+          reject(error);
+        },
+        () => {
+          getDownloadURL(uploadTask.snapshot.ref).then(resolve);
+        }
+      );
+    });
+  };
+
+  const handleImageSubmit = async (e) => {
+    e.preventDefault();
+
+    if (!selectedColor) {
+      setImageUploadError("يرجى اختيار لون قبل رفع الصور");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const uploadPromises = Array.from(files).map(uploadImage);
+      const urls = await Promise.all(uploadPromises);
+
+      setFormData((prevData) => ({
+        ...prevData,
+        imagesByColor: {
+          ...prevData.imagesByColor,
+          [selectedColor]: {
+            color: selectedColor,
+            images: [
+              ...(prevData.imagesByColor[selectedColor]?.images || []),
+              ...urls, // Ensure urls is an array of image URLs
+            ],
+          },
+        },
+      }));
+
+      setImageUploadError(null);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setUploading(false);
+      setImageUploadProgress(null);
+    }
+  };
+
+  const handleRemoveImageByColor = (color, index) => {
+    setFormData((prevData) => ({
+      ...prevData,
+      imagesByColor: {
+        ...prevData.imagesByColor,
+        [color]: {
+          ...prevData.imagesByColor[color],
+          images: prevData.imagesByColor[color].images.filter(
+            (_, i) => i !== index
+          ),
+        },
+      },
+    }));
+  };
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
 
-    if (type === "checkbox" && name === "sizes") {
+    if (name === "price") {
+      setFormData((prev) => ({ ...prev, [name]: parseFloat(value) || "" }));
+    } else if (type === "checkbox" && name === "sizes") {
       setFormData((prev) => ({
         ...prev,
         sizes: checked
-          ? [...prev.sizes, value] // Add size
-          : prev.sizes.filter((size) => size !== value), // Remove size
+          ? [...prev.sizes, value]
+          : prev.sizes.filter((size) => size !== value),
       }));
     } else if (type === "checkbox") {
       setFormData((prev) => ({ ...prev, [name]: checked }));
-    } else if (type === "file") {
-      const files = Array.from(e.target.files);
-      setFormData((prev) => ({ ...prev, images: files }));
     } else {
       setFormData((prev) => ({ ...prev, [name]: value }));
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log("Submitted data:", formData);
+    try {
+      setLoading(true);
+      const preparedSizes = prepareSizesForSubmission(formData.sizes);
+      const formattedImagesByColor = Object.keys(formData.imagesByColor).reduce(
+        (acc, color) => {
+          acc[color] = {
+            color, // اسم اللون
+            images: formData.imagesByColor[color]?.images || [],
+          };
+          return acc;
+        },
+        {}
+      );
+      productSchema.parse(formData);
+      const response = await fetch(`${apiUrl}/api/products/create`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...formData,
+          sizes: preparedSizes,
+          imagesByColor: formattedImagesByColor, // استخدام النسخة المعدلة
+        }),
+      });
+
+      if (!response.ok) {
+        setErrors(data.message);
+        setLoading(false);
+        return;
+      } else {
+        const data = await response.json();
+        setLoading(false);
+        setErrors({});
+      }
+    } catch (err) {
+      setErrors(
+        err.errors.reduce((acc, error) => {
+          acc[error.path] = error.message;
+          return acc;
+        }, {})
+      );
+      setLoading(false);
+      return;
+    }
   };
 
+  console.log(formData.imagesByColor);
   return (
     <div className="max-w-xl p-6 rounded-lg">
-      <h2 className="text-2xl font-bold mb-4">Add Product</h2>
+      <h2 className="text-2xl text-slate-600 font-bold mb-4">اضافة منتجات</h2>
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Title */}
-        <div className="flex items-center gap-2">
-          <Image
-            src="/images/uploading.png"
-            alt="Example"
-            width={100}
-            height={0}
-          />
-          <Image
-            src="/images/uploading.png"
-            alt="Example"
-            width={100}
-            height={0}
-          />
-          <Image
-            src="/images/uploading.png"
-            alt="Example"
-            width={100}
-            height={0}
-          />
-          <Image
-            src="/images/uploading.png"
-            alt="Example"
-            width={100}
-            height={0}
-          />
+        <div>
+          <label className="block text-xl font-semibold mb-1 text-gray-600">
+            اختر لون الصورة
+          </label>
+          <select
+            value={selectedColor}
+            onChange={(e) => setSelectedColor(e.target.value)}
+            className="w-[150px] px-4 py-2 border font-semibold rounded-md text-slate-600 border border-gray-300"
+          >
+            <option value="" disabled>
+              اختر لون
+            </option>
+            {colors.map((color) => (
+              <option key={color} value={color}>
+                {color}
+              </option>
+            ))}
+          </select>
         </div>
+        {/* Upload Images */}
+        <div>
+          <h2 className="text-slate-600 font-semibold text-xl">ارفع الصور</h2>
+          <div className="flex gap-4 items-center justify-between border-4 border-slate-600 border-dotted p-3">
+            <input
+              type="file"
+              multiple
+              accept="image/*"
+              ref={filePickerRef}
+              onChange={handleFileChange}
+              hidden
+            />
+            <Image
+              src="/images/uploading.png"
+              alt="Upload Images"
+              width={100}
+              height={100}
+              onClick={() => filePickerRef.current.click()}
+              className="cursor-pointer"
+            />
+            <button
+              type="button"
+              className="p-2 bg-black text-xl font-semibold text-white"
+              onClick={handleImageSubmit}
+              disabled={uploading}
+            >
+              {uploading ? (
+                <LoadingSpinner />
+              ) : (
+                <div className="text-center"> رفع الصورة</div>
+              )}
+            </button>
+          </div>
+          {imageUploadError && <ErrorMessage message={imageUploadError} />}
+          {/* Display Previews */}
+          <div>
+            <div>
+              <h3 className="text-lg font-semibold text-slate-600 text-xl">
+                صور لكل لون
+              </h3>
+              {Object.values(formData.imagesByColor).map(
+                ({ color, images }) => (
+                  <div key={color}>
+                    <h4 className="text-md font-semibold">{color}</h4>
+                    <div className="flex gap-2">
+                      {images.map((url, index) => (
+                        <div key={index} className="relative group">
+                          <img
+                            src={url}
+                            alt={color}
+                            className="object-cover h-32 w-32 rounded-md border"
+                          />
+                          <button
+                            className="absolute top-2 right-2"
+                            onClick={() =>
+                              handleRemoveImageByColor(color, index)
+                            }
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className="h-6 w-6 text-red-600"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="2"
+                                d="M6 18L18 6M6 6l12 12"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Product Details Form */}
         <div>
           <label className="block text-xl font-semibold mb-1 text-gray-600">
             اسم المنتج
@@ -87,7 +334,6 @@ const ProductForm = () => {
           />
         </div>
 
-        {/* Content */}
         <div>
           <label className="block text-xl font-semibold mb-1 text-gray-600">
             وصف المنتج
@@ -100,8 +346,9 @@ const ProductForm = () => {
             placeholder="ادخل وصف للمنتج"
           />
         </div>
+
+        {/* Category and Sub Category */}
         <div className="flex items-center justify-between">
-          {/* Category */}
           <div>
             <label className="block text-xl font-semibold mb-1 text-gray-600">
               فئة المنتج
@@ -110,14 +357,17 @@ const ProductForm = () => {
               name="category"
               value={formData.category}
               onChange={handleInputChange}
-              className="w-[100px] px-4 py-2 border font-semibold rounded-md text-slate-600 border border-gray-300"
+              className="w-[150px] px-4 py-2 border font-semibold rounded-md text-slate-600 border-gray-300"
             >
-              <option value="Men">رجال</option>
-              <option value="Kids">اطفال</option>
+              <option value="">اختر فئة المنتج</option>
+              {categories.map((cat) => (
+                <option key={cat.value} value={cat.value}>
+                  {cat.label}
+                </option>
+              ))}
             </select>
           </div>
 
-          {/* Sub Category */}
           <div>
             <label className="block text-xl font-semibold mb-1 text-gray-600">
               الفئة الفرعية
@@ -126,15 +376,17 @@ const ProductForm = () => {
               name="subCategory"
               value={formData.subCategory}
               onChange={handleInputChange}
-              className="w-[150px] px-4 py-2 border font-semibold rounded-md text-slate-600 border border-gray-300"
+              className="w-[150px] px-4 py-2 border font-semibold rounded-md text-slate-600 border-gray-300"
             >
-              <option value="Topwear">Topwear</option>
-              <option value="Bottomwear">Bottomwear</option>
-              <option value="Winterwear">Winterwear</option>
+              <option value="">اختر فئة المنتج</option>
+              {subCategories.map((cat) => (
+                <option key={cat.value} value={cat.value}>
+                  {cat.label}
+                </option>
+              ))}
             </select>
           </div>
 
-          {/* Price */}
           <div>
             <label className="block text-xl font-semibold mb-1 text-gray-600">
               السعر
@@ -154,24 +406,26 @@ const ProductForm = () => {
         <div className="mb-4">
           <label className="block text-lg font-medium mb-2">Sizes</label>
           <div className="flex flex-wrap gap-4">
-            {sizes.map((size) => (
-              <label key={size} className="cursor-pointer">
+            {Object.keys(sizeMapping).map((key) => (
+              <label key={key} className="cursor-pointer">
+                {/* Hidden Checkbox */}
                 <input
                   type="checkbox"
                   name="sizes"
-                  value={size}
-                  className="hidden"
-                  checked={formData.sizes.includes(size)}
+                  value={key}
+                  className="hidden" // Hides the default checkbox
+                  checked={formData.sizes.includes(key)}
                   onChange={handleInputChange}
                 />
+                {/* Custom Styled Div */}
                 <div
                   className={`w-16 h-16 flex items-center justify-center rounded-lg font-bold text-white transition-all ${
-                    formData.sizes.includes(size)
-                      ? "bg-pink-300 text-slate-600 scale-105 shadow-md  "
+                    formData.sizes.includes(key)
+                      ? "bg-pink-300 text-slate-600 scale-105 shadow-md"
                       : "bg-blue-100 text-slate-600 shadow-blue-300"
                   }`}
                 >
-                  {size}
+                  {sizeMapping[key]} {/* Display the size label */}
                 </div>
               </label>
             ))}
@@ -188,22 +442,30 @@ const ProductForm = () => {
               onChange={handleInputChange}
               className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
             />
-            <span className="text-slate-600 font-semibold text-sm">Add to Bestseller</span>
+            <span className="text-lg">هذا منتج مميز</span>
           </label>
         </div>
 
-        {/* Submit Button */}
-        <div>
+        <div className="pt-5 ">
           <button
             type="submit"
-            className="text-md font-semibold bg-black text-white py-3 px-10 "
+            className="bg-black font-semibold text-white py-3 px-6"
+            disabled={loading}
           >
-            ADD
+            {loading ? (
+              <LoadingSpinner />
+            ) : (
+              <div className="text-center"> حفظ المنتج</div>
+            )}
           </button>
         </div>
       </form>
+      {errors.category && <ErrorMessage message={errors.category} />}
+      {errors.price && <ErrorMessage message={errors.price} />}
+      {errors.content && <ErrorMessage message={errors.content} />}
+      {errors.sizes && <ErrorMessage message={errors.sizes} />}
+      {errors.imagesByColor && <ErrorMessage message={errors.imagesByColor} />}
     </div>
   );
 };
-
 export default ProductForm;
