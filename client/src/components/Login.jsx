@@ -7,7 +7,7 @@ import SuccessMessage from "./SuccessMessage";
 import { useRouter } from "next/navigation";
 
 export default function Login() {
-  const [formData, setFormData] = useState({ email: "", password: "" });
+  const [formData, setFormData] = useState({ email: "idriss@example.com", password: "123456" });
   const [loading, setLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState(false);
   const [error, setError] = useState(null);
@@ -71,6 +71,7 @@ export default function Login() {
               type="email"
               id="email"
               placeholder="ادخل البريد الاكتروني"
+              value={formData.email}
               onChange={handleChange}
               className="mt-1 w-full px-4 py-2 border border-gray-300 rounded-lg "
             />
@@ -88,6 +89,7 @@ export default function Login() {
               type="password"
               id="password"
               placeholder="ادخل كلمة السر"
+              value={formData.password}
               onChange={handleChange}
               className="mt-1 w-full px-4 py-2 border border-gray-300 rounded-lg "
             />
